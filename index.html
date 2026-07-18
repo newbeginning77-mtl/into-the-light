@@ -551,64 +551,96 @@ footer {
 
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  /* ── VIDEOS ── */
+  /* ── VIDEOS (scroll-scrub engine) ── */
   const vids   = [document.getElementById('v0'), document.getElementById('v1'), document.getElementById('v2')];
   const lbar   = document.getElementById('lbar');
   const lhint  = document.getElementById('lhint');
   const loader = document.getElementById('loader');
   const hints  = ['Act I — the stars…', 'Act II — the descent…', 'Act III — the valley…'];
+  const RANGES = [[0, 0.34], [0.34, 0.67], [0.67, 1.0]];
+  const durs   = [0, 0, 0];
   let loaded = 0, active = -1;
 
-  function showClip(i) {
+  function setActive(i) {
     if (i === active) return;
     active = i;
-    vids.forEach((v, j) => {
-      if (j === i) {
-        v.classList.add('on');
-        v.play().catch(() => {});
-      } else {
-        v.classList.remove('on');
-        setTimeout(() => { if (active !== j) v.pause(); }, 1100);
-      }
-    });
-  }
-
-  function onVideoReady(i) {
-    loaded++;
-    lbar.style.width = (loaded / 3 * 100) + '%';
-    lhint.textContent = hints[i] || '';
-    if (loaded === 1) {
-      showClip(0);
-      hideLoader();
-    }
+    vids.forEach((v, j) => v.classList.toggle('on', j === i));
   }
 
   vids.forEach((v, i) => {
-    v.addEventListener('canplay', () => onVideoReady(i), { once: true });
-    v.addEventListener('error',   () => { loaded++; if (loaded === 1) hideLoader(); }, { once: true });
+    v.loop = false;
+    v.addEventListener('loadedmetadata', () => { durs[i] = v.duration; }, { once: true });
+    v.addEventListener('canplaythrough', () => {
+      loaded++;
+      lbar.style.width = (loaded / 3 * 100) + '%';
+      lhint.textContent = hints[i] || '';
+      if (loaded === 3) hideLoader();
+    }, { once: true });
+    v.addEventListener('error', () => {
+      loaded++;
+      if (loaded === 3) hideLoader();
+    }, { once: true });
+    v.load();
   });
 
   /* ── LOADER ── */
+  let loaderGone = false;
   function hideLoader() {
+    if (loaderGone) return;
+    loaderGone = true;
     loader.classList.add('gone');
+    setActive(0);
     startMotion();
+    requestAnimationFrame(tick);
   }
-  setTimeout(hideLoader, 12000); // failsafe
+  setTimeout(hideLoader, 15000); // failsafe
 
-  /* ── SCROLL → CLIP ── */
+  /* ── SCROLL PROGRESS (lerped playhead) ── */
+  let targetP = 0, playP = 0;
+  function computeTarget() {
+    const max = document.documentElement.scrollHeight - innerHeight;
+    targetP = max > 0 ? Math.max(0, Math.min(1, scrollY / max)) : 0;
+  }
+  addEventListener('scroll', computeTarget, { passive: true });
+  computeTarget();
+
+  function scrub(p) {
+    let idx = RANGES.length - 1;
+    for (let i = 0; i < RANGES.length; i++) {
+      if (p >= RANGES[i][0] && p < RANGES[i][1]) { idx = i; break; }
+    }
+    setActive(idx);
+    const [lo, hi] = RANGES[idx];
+    const v = vids[idx];
+    if (durs[idx] > 0 && v.readyState >= 2) {
+      const local = Math.max(0, Math.min(1, (p - lo) / (hi - lo)));
+      const t = local * Math.max(0, durs[idx] - 0.05);
+      if (Math.abs(v.currentTime - t) > 0.033) v.currentTime = t;
+    }
+  }
+
+  function tick() {
+    playP += (targetP - playP) * (reduced ? 1 : 0.12);
+    if (Math.abs(targetP - playP) < 0.0004) playP = targetP;
+    scrub(playP);
+    updateChrome();
+    requestAnimationFrame(tick);
+  }
+
+  /* ── CHAPTER READOUT ── */
   const SECTIONS = [
-    { id: 'night',   clip: 0, label: 'Night'   },
-    { id: 'dawn',    clip: 0, label: 'Dawn'    },
-    { id: 'sunrise', clip: 1, label: 'Sunrise' },
-    { id: 'morning', clip: 1, label: 'Morning' },
-    { id: 'sunset',  clip: 2, label: 'Sunset'  },
+    { id: 'night',   label: 'Night'   },
+    { id: 'dawn',    label: 'Dawn'    },
+    { id: 'sunrise', label: 'Sunrise' },
+    { id: 'morning', label: 'Morning' },
+    { id: 'sunset',  label: 'Sunset'  },
   ];
   const chapname = document.getElementById('chapname');
   const chapbar  = document.getElementById('chapbar');
   const hdr      = document.getElementById('hdr');
   let lastSec = -1;
 
-  function onScroll() {
+  function updateChrome() {
     const mid = scrollY + innerHeight * 0.45;
     let cur = 0;
     SECTIONS.forEach((s, i) => {
@@ -618,10 +650,8 @@ footer {
     if (cur !== lastSec) {
       lastSec = cur;
       chapname.textContent = SECTIONS[cur].label;
-      showClip(SECTIONS[cur].clip);
       hdr.classList.toggle('light', cur === 3);
     }
-    // chapter progress bar
     const s   = SECTIONS[cur];
     const el  = document.getElementById(s.id);
     const nxt = SECTIONS[cur + 1] ? document.getElementById(SECTIONS[cur + 1].id) : null;
@@ -632,8 +662,6 @@ footer {
       chapbar.style.width = (pct * 100).toFixed(1) + '%';
     }
   }
-  addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
 
   /* ── MOTION ── */
   gsap.registerPlugin(ScrollTrigger);
